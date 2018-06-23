@@ -7,7 +7,7 @@ interface StopIteration {
   stop: true;
 }
 type Step<T> = Item<T> | StopIteration;
-type Sequence<T> = () => Step<T>;
+export type Sequence<T> = () => Step<T>;
 type SequenceGenerator<T> = () => Sequence<T>;
 
 // How do I get it to realize that `create` and `empty` are SequenceGenerators?
@@ -38,62 +38,175 @@ export function chain<T>(
 
 // How would it not realize the types of these arguments, given that they're
 // passed directly to `chain`?
-export function andThen(secondGenerator, firstSequence) {
-  return chain(firstSequence, secondGenerator);
+export function andThen<T>(
+  secondGenerator: SequenceGenerator<T>,
+  firstSequence: Sequence<T>
+) {
+  return chain<T>(firstSequence, secondGenerator);
 }
 
-export function reduce(reducer, initialAccumulator, sequence) {
-  function helper(accumulator, seq) {
-    const step = seq();
+export function peek<T>() {
+  return (sequence: Sequence<T>) => {
+    let step = sequence();
     switch (step.stop) {
       case true:
-        return accumulator;
+        return null;
       case false:
-        const newAccumulator = reducer(step.item, accumulator);
-        return helper(newAccumulator, step.next);
+        return step.item;
     }
-  }
-  return helper(initialAccumulator, sequence);
+  };
 }
 
-export function map(func, sequence) {
-  const step = sequence();
-  switch (step.stop) {
-    case true:
-      return empty();
-    case false:
-      return chain(just(func(step.item)), () => map(func, step.next));
-  }
+type reducer<I, A> = (item: I, accumulator: A) => A;
+
+export function reduce<I, A>(reducer: reducer<I, A>, initialAccumulator: A) {
+  return (sequence: Sequence<I>) => {
+    function helper(accumulator: A, seq: Sequence<I>): A {
+      const step = seq();
+      switch (step.stop) {
+        case true:
+          return accumulator;
+        case false:
+          const newAccumulator = reducer(step.item, accumulator);
+          return helper(newAccumulator, step.next);
+      }
+    }
+    return helper(initialAccumulator, sequence);
+  };
 }
 
-export function each(func, sequence) {
-  map(func, sequence);
+export function map<T, S>(func: (item: T) => S) {
+  return (sequence: Sequence<T>): Sequence<S> => {
+    const step = sequence();
+    switch (step.stop) {
+      case true:
+        return empty();
+      case false:
+        return chain(just(func(step.item)), () => map(func)(step.next));
+    }
+  };
 }
 
-export function takeWhile(predicate, sequence) {
-  const step = sequence();
-  switch (step.stop) {
-    case true:
-      return empty();
-    case false:
-      return predicate(step.item)
-        ? chain(just(step.item), () => takeWhile(predicate, step.next))
-        : empty();
-  }
+export function each<T>(func: (item: T) => void) {
+  return (sequence: Sequence<T>) => {
+    map(func)(sequence);
+  };
 }
 
-export function count(start: number): Sequence<number> {
-  return chain(just(start), () => count(start + 1));
+export function takeWhile<T>(predicate: (item: T) => boolean) {
+  return (sequence: Sequence<T>): Sequence<T> => {
+    const step = sequence();
+    switch (step.stop) {
+      case true:
+        return empty();
+      case false:
+        return predicate(step.item)
+          ? chain<T>(just(step.item), () => takeWhile<T>(predicate)(step.next))
+          : empty();
+    }
+  };
 }
 
-export function toArray(sequence) {
-  return reduce((a, item) => [...a, item], [], sequence);
+export function count(start: number) {
+  return (): Sequence<number> => {
+    let i = start;
+    const loop = (): Step<number> => {
+      const j = i;
+      i += 1;
+      // return chain(just(i), () => loop());
+      return {
+        stop: false,
+        item: j,
+        next: loop
+      };
+      // return create(j, loop);
+    };
+    return loop;
+  };
 }
 
-export function compose(...funcs: ((x: any) => any)[]) {
-  return arg => {
-    let newArg;
-    funcs.forEach(func => (newArg = func(newArg)));
+export function range(start: number, stop: number) {
+  return () => takeWhile<number>(i => i <= stop)(count(start)());
+}
+
+export function chunkBy<T, S>(makeKey: (item: T) => S) {
+  return chunk((a: T, b: T) => makeKey(a) !== makeKey(b));
+}
+
+// `chunk` takes a `sequence` and a `splitChunkHere` predicate and generates
+// a sequence of chunks where each chunk is itself a sequence.
+// For every item in `sequence`, `splitChunkHere` gets passed the item and the
+// previous item, and returns `true` if the chunk should be split between those
+// two items.
+// Note that this means that chunks can never be empty.
+export function chunk<T>(
+  splitChunkHere: (
+    a: T,
+    b: T,
+    chunkIndex: number,
+    chunkLength: number
+  ) => boolean
+) {
+  return (sequence: Sequence<T>): Sequence<Sequence<T>> => {
+    const helper = (
+      currentChunk: Sequence<T>,
+      previousItem: T,
+      chunkIndex: number,
+      chunkLength: number,
+      seq: Sequence<T>
+    ): Sequence<Sequence<T>> => {
+      const step = seq();
+      switch (step.stop) {
+        case true:
+          return just(currentChunk);
+        case false:
+          if (
+            splitChunkHere(previousItem, step.item, chunkIndex, chunkLength)
+          ) {
+            // Return the currentChunk and start a new chunk from the current
+            // item;
+            const newChunk = just(step.item);
+            const restOfTheChunks = () =>
+              helper(newChunk, step.item, chunkIndex + 1, 1, step.next);
+            return chain(just(currentChunk), restOfTheChunks);
+          } else {
+            // Add the current item at the end of the currentChunk.
+            const stillCurrentChunk = chain<T>(currentChunk, () =>
+              just(step.item)
+            );
+            return helper(
+              stillCurrentChunk,
+              step.item,
+              chunkIndex,
+              chunkLength + 1,
+              step.next
+            );
+          }
+      }
+    };
+    const step = sequence();
+    switch (step.stop) {
+      case true:
+        return empty();
+      case false:
+        return helper(just(step.item), step.item, 0, 1, step.next);
+    }
+  };
+}
+
+export function toArray<T>(sequence: Sequence<T>) {
+  // return reduce<T, T[]>((a, item) => [...a, item], [])(sequence);
+  const a: T[] = [];
+  each<T>(item => a.push(item))(sequence);
+  return a;
+}
+
+export function compose(...funcs: ((seq: Sequence<any>) => Sequence<any>)[]) {
+  return (seq_: Sequence<any> = empty()) => {
+    let newArg = seq_;
+    funcs.forEach(func => {
+      newArg = func(newArg);
+    });
     return newArg;
   };
 }
