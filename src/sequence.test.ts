@@ -2,6 +2,7 @@ import {
   Sequence,
   count,
   toArray,
+  take,
   takeWhile,
   map,
   each,
@@ -10,9 +11,35 @@ import {
   chunk,
   chunkBy,
   peek,
-  empty
+  length,
+  empty,
+  mapStep,
+  fromArray,
+  chain,
+  just,
+  createStep
 } from "./sequence";
 
+describe("each", () => {
+  test("sum up some numbers", () => {
+    const seq = fromArray([0, 1, 2, 3, 4, 5]);
+    let sum = 0;
+    each<number>(i => (sum += i))(seq);
+    expect(sum).toEqual(15);
+  });
+});
+describe("fromArray", () => {
+  test("works", () => {
+    const seq = fromArray([0, 1, 2, 3, 4, 5]);
+    expect(toArray(seq)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+});
+describe("map", () => {
+  test("doubles numbers", () => {
+    const seq = map<number, number>(i => i * 2)(fromArray([0, 1, 2]));
+    expect(toArray(seq)).toEqual([0, 2, 4]);
+  });
+});
 describe("count", () => {
   test("count with start 0", () => {
     const seq = compose(
@@ -42,6 +69,37 @@ describe("range", () => {
   test("empty range", () => {
     const seq = range(3, 1)();
     expect(toArray(seq)).toEqual([]);
+  });
+  test("huge range", () => {
+    // Going to 10,000 blows the stack.
+    const seq = range(1, 1000)();
+    expect(length(seq)).toEqual(1000);
+  });
+});
+
+describe("take", () => {
+  test("take from infinite counter", () => {
+    const seq = compose(
+      count(1),
+      take(2)
+    )();
+    expect(toArray(seq)).toEqual([1, 2]);
+  });
+  test("take from massive range", () => {
+    // This should be lazy and thus not blow the stack.
+    const seq = compose(
+      range(0, 1000000000000),
+      take(3)
+    )();
+    expect(toArray(seq)).toEqual([0, 1, 2]);
+  });
+  test("take from infinite chunk", () => {
+    const seq = compose(
+      count(0),
+      chunk((a, b) => b % 3 === 0),
+      take(3)
+    )();
+    expect(length(seq)).toEqual(3);
   });
 });
 
@@ -94,27 +152,21 @@ describe("chunk", () => {
   });
   test("infinite chunks", () => {
     let seq = compose(
+      // range(0, 50)
       count(0),
       chunk<number>(
         (_a, _b, chunkIndex, chunkLength) => chunkLength > chunkIndex
       ),
+      // each<number>(chunk => console.log("chunk", chunk)),
       takeWhile<Sequence<number>>((chunk: Sequence<number>) => {
         const i = peek()(chunk);
-        console.log("i", i);
-        return i !== null && i < 20;
+        return i !== null && i < 100;
       })
     )();
     const a = map((subSeq: Sequence<number>) => toArray(subSeq))(seq);
-    expect(toArray(a)).toEqual([
-      // keep this formatting
-      [0],
-      [1, 2],
-      [3, 4, 5],
-      [6, 7, 8, 9]
-    ]);
+    expect(toArray(a)).toMatchSnapshot();
   });
   test("input is an empty sequence", () => {
-    // let seq: Sequence<Sequence<number>> = empty();
     let seq = chunk<number>((_a, _b) => true)(empty());
     const a = map((subSeq: Sequence<number>) => toArray(subSeq))(seq);
     expect(toArray(a)).toEqual([]);
