@@ -10,7 +10,7 @@ type Step<T> = Item<T> | StopIteration;
 export type Sequence<T> = () => Step<T>;
 type SequenceGenerator<T> = () => Sequence<T>;
 
-// How do I get it to realize that `create` and `empty` are SequenceGenerators?
+// How do I get it to realize that `createStep` and `empty` are SequenceGenerators?
 export function createStep<T>(item: T, next: Sequence<T>): Step<T> {
   return { item, next, stop: false };
 }
@@ -45,7 +45,7 @@ export function andThen<T>(
   return chain<T>(firstSequence, secondGenerator);
 }
 
-export function peek<T>() {
+export function head<T>() {
   return (sequence: Sequence<T>) => {
     let step = sequence();
     switch (step.stop) {
@@ -53,6 +53,20 @@ export function peek<T>() {
         return null;
       case false:
         return step.item;
+    }
+  };
+}
+
+export const peek = head;
+
+export function tail<T>() {
+  return (sequence: Sequence<T>) => {
+    let step = sequence();
+    switch (step.stop) {
+      case true:
+        return empty();
+      case false:
+        return step.next;
     }
   };
 }
@@ -172,20 +186,11 @@ export function range(start: number, stop: number): SequenceGenerator<number> {
 // previous item, and returns `true` if the chunk should be split between those
 // two items.
 // Note that this means that chunks can never be empty.
-export function chunk<T>(
-  splitChunkHere: (
-    a: T,
-    b: T,
-    chunkIndex: number,
-    chunkLength: number
-  ) => boolean
-) {
+export function chunk<T>(splitChunkHere: (a: T, b: T) => boolean) {
   return (sequence: Sequence<T>): Sequence<Sequence<T>> => {
     const helper = (
       currentChunk: Sequence<T>,
       previousItem: T,
-      chunkIndex: number,
-      chunkLength: number,
       seq: Sequence<T>
     ): Sequence<Sequence<T>> => {
       const step = seq();
@@ -193,14 +198,12 @@ export function chunk<T>(
         case true:
           return just(currentChunk);
         case false:
-          if (
-            splitChunkHere(previousItem, step.item, chunkIndex, chunkLength)
-          ) {
+          if (splitChunkHere(previousItem, step.item)) {
             // Return the currentChunk and start a new chunk from the current
             // item;
             const newChunk = just(step.item);
             const restOfTheChunks = () => {
-              return helper(newChunk, step.item, chunkIndex + 1, 1, step.next);
+              return helper(newChunk, step.item, step.next);
             };
             return chain(just(currentChunk), restOfTheChunks);
           } else {
@@ -209,15 +212,7 @@ export function chunk<T>(
               just(step.item)
             );
             // console.log("still current chunk", toArray(stillCurrentChunk));
-            return chain(empty(), () => {
-              return helper(
-                stillCurrentChunk,
-                step.item,
-                chunkIndex,
-                chunkLength + 1,
-                step.next
-              );
-            });
+            return helper(stillCurrentChunk, step.item, step.next);
           }
       }
     };
@@ -226,9 +221,7 @@ export function chunk<T>(
       case true:
         return empty();
       case false:
-        return chain(empty(), () =>
-          helper(just(step.item), step.item, 0, 1, step.next)
-        );
+        return helper(just(step.item), step.item, step.next);
     }
   };
 }
@@ -237,8 +230,136 @@ export function chunkBy<T, S>(makeKey: (item: T) => S) {
   return chunk((a: T, b: T) => makeKey(a) !== makeKey(b));
 }
 
+export function slices<T>(count: number) {
+  return sequence => {
+    const helper = (
+      currentSlice: Sequence<T>,
+      currentSliceLength: number,
+      seq
+    ): Sequence<Sequence<T>> => {
+      const step = seq();
+      switch (step.stop) {
+        case true:
+          return just(currentSlice);
+        case false:
+          if (currentSliceLength === count) {
+            const newSlice = just(step.item);
+            const restOfTheSlices = () => {
+              return helper(newSlice, 1, step.next);
+            };
+            return chain(just(currentSlice), restOfTheSlices);
+          } else {
+            // Add the current item at the end of the currentSlice.
+            const stillCurrentSlice = chain<T>(currentSlice, () =>
+              just(step.item)
+            );
+            return helper(stillCurrentSlice, currentSliceLength + 1, step.next);
+          }
+      }
+    };
+    const step = sequence();
+    switch (step.stop) {
+      case true:
+        return empty();
+      case false:
+        return helper(just(step.item), 1, step.next);
+    }
+  };
+}
+
+export function conses<T>(count: number) {
+  return sequence => {
+    const helper = (
+      currentCons: Sequence<T>,
+      currentConsLength: number,
+      currentSeq,
+      headSeq
+    ): Sequence<Sequence<T>> => {
+      return 5;
+    };
+  };
+}
+
+export function conses2<T>(count: number) {
+  return sequence => {
+    const helper = (
+      currentCons: Sequence<T>,
+      currentConsLength: number,
+      currentSeq,
+      headSeq
+    ): Sequence<Sequence<T>> => {
+      // `currentSeq` is the Sequence starting after the last item of
+      // `currentCons`.
+      // `headSeq` is the Sequence starting after the first item of
+      // `currentCons`.
+      const step = currentSeq();
+      switch (step.stop) {
+        case true:
+          return just(currentCons);
+        case false:
+          if (currentConsLength === count) {
+            // const newHeadSeq = tail()(headSeq);
+            const restOfTheConses = () => {
+              return conses(count)(headSeq);
+              // return helper(empty(), 0, headSeq, headSeq);
+            };
+            return chain(just(currentCons), restOfTheConses);
+          } else {
+            // Add the current item at the end of the currentCons.
+            const stillCurrentCons = chain<T>(currentCons, () =>
+              just(step.item)
+            );
+            return helper(
+              stillCurrentCons,
+              currentConsLength + 1,
+              step.next,
+              headSeq
+            );
+          }
+      }
+    };
+    const step = sequence();
+    switch (step.stop) {
+      case true:
+        return empty();
+      case false:
+        return helper(just(step.item), 1, step.next, step.next);
+    }
+  };
+}
+
 export function length<T>(sequence: Sequence<T>) {
   return reduce((_item, sum) => sum + 1, 0)(sequence);
+}
+
+export function nth<T>(index: number) {
+  return (sequence: Sequence<T>): T | null => {
+    const step = sequence();
+    switch (step.stop) {
+      case true:
+        return null;
+      case false:
+        return index === 0 ? step.item : nth<T>(index - 1)(step.next);
+    }
+  };
+}
+
+export function groupBy<T, S>(makeKey: (item: T) => S) {
+  return reduce((item, groups) => {
+    const key = makeKey(item);
+    if (groups[key]) {
+      groups[key].push(item);
+    } else {
+      groups[key] = [item];
+    }
+    return groups;
+  }, {});
+}
+export function indexBy<T, S>(makeKey: (item: T) => S) {
+  return reduce((item, groups) => {
+    const key = makeKey(item);
+    return { ...groups, [key]: item };
+  }, {});
 }
 
 export function compose(...funcs: ((seq: Sequence<any>) => Sequence<any>)[]) {
